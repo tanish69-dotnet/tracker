@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react';
 import { format, subDays } from 'date-fns';
 
-const API_BASE_URL = 'http://localhost:5000/api/food';
+const API_BASE_URL = '/api/food';
 const STORAGE_KEYS = {
     SETTINGS: 'smart_calorie_tracker_settings',
 };
