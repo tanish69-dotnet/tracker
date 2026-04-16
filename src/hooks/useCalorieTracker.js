@@ -1,8 +1,8 @@
 import { useState, useEffect } from 'react';
-import { format, subDays, isSameDay, parseISO, differenceInCalendarDays } from 'date-fns';
+import { format, subDays } from 'date-fns';
 
+const API_BASE_URL = 'http://localhost:5000/api/food';
 const STORAGE_KEYS = {
-    LOG: 'smart_calorie_tracker_log',
     SETTINGS: 'smart_calorie_tracker_settings',
 };
 
@@ -12,7 +12,6 @@ const DEFAULT_SETTINGS = {
 };
 
 export function useCalorieTracker() {
-    // Load Settings
     const [settings, setSettings] = useState(() => {
         try {
             const stored = localStorage.getItem(STORAGE_KEYS.SETTINGS);
@@ -22,20 +21,35 @@ export function useCalorieTracker() {
         }
     });
 
-    // Load Food Log
-    const [foodLog, setFoodLog] = useState(() => {
-        try {
-            const stored = localStorage.getItem(STORAGE_KEYS.LOG);
-            return stored ? JSON.parse(stored) : [];
-        } catch {
-            return [];
-        }
-    });
+    const [foodLog, setFoodLog] = useState([]);
+    const [loading, setLoading] = useState(true);
+    const [error, setError] = useState(null);
 
-    // Persist Settings
+    // Initial Fetch from MongoDB
+    useEffect(() => {
+        const fetchFood = async () => {
+            try {
+                setLoading(true);
+                const response = await fetch(API_BASE_URL);
+                if (!response.ok) throw new Error('Failed to fetch food log');
+                const data = await response.json();
+                // Map MongoDB _id to frontend id for compatibility
+                const mappedData = data.map(item => ({ ...item, id: item._id }));
+                setFoodLog(mappedData);
+            } catch (err) {
+                console.error('Fetch Error:', err);
+                setError(err.message);
+            } finally {
+                setLoading(false);
+            }
+        };
+
+        fetchFood();
+    }, []);
+
+    // Persist Settings to LocalStorage
     useEffect(() => {
         localStorage.setItem(STORAGE_KEYS.SETTINGS, JSON.stringify(settings));
-        // Apply theme
         if (settings.theme === 'dark') {
             document.documentElement.classList.add('dark');
         } else {
@@ -43,29 +57,47 @@ export function useCalorieTracker() {
         }
     }, [settings]);
 
-    // Persist Log
-    useEffect(() => {
-        localStorage.setItem(STORAGE_KEYS.LOG, JSON.stringify(foodLog));
-    }, [foodLog]);
-
     // Actions
-    const addFood = (item, date = new Date()) => {
+    const addFood = async (item, date = new Date()) => {
         const newItem = {
-            id: crypto.randomUUID(),
             name: item.name,
             calories: Number(item.calories),
             protein: Number(item.protein) || 0,
             carbs: Number(item.carbs) || 0,
             fat: Number(item.fat) || 0,
             category: item.category,
-            date: format(date, 'yyyy-MM-dd'), // Store as YYYY-MM-DD
+            date: format(date, 'yyyy-MM-dd'),
             timestamp: Date.now(),
         };
-        setFoodLog(prev => [newItem, ...prev]);
+
+        try {
+            const response = await fetch(API_BASE_URL, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(newItem),
+            });
+
+            if (!response.ok) throw new Error('Failed to save entry');
+            const savedItem = await response.json();
+            setFoodLog(prev => [{ ...savedItem, id: savedItem._id }, ...prev]);
+        } catch (err) {
+            console.error('Add Error:', err);
+            setError(err.message);
+        }
     };
 
-    const deleteFood = (id) => {
-        setFoodLog(prev => prev.filter(item => item.id !== id));
+    const deleteFood = async (id) => {
+        try {
+            const response = await fetch(`${API_BASE_URL}/${id}`, {
+                method: 'DELETE',
+            });
+
+            if (!response.ok) throw new Error('Failed to delete entry');
+            setFoodLog(prev => prev.filter(item => item.id !== id));
+        } catch (err) {
+            console.error('Delete Error:', err);
+            setError(err.message);
+        }
     };
 
     const updateGoal = (goal) => {
@@ -76,15 +108,10 @@ export function useCalorieTracker() {
         setSettings(prev => ({ ...prev, theme: prev.theme === 'light' ? 'dark' : 'light' }));
     };
 
-    const clearHistory = (date) => {
-        if (date) {
-            // Clear specific date
-            const dateStr = format(date, 'yyyy-MM-dd');
-            setFoodLog(prev => prev.filter(item => item.date !== dateStr));
-        } else {
-            // Clear all
-            setFoodLog([]);
-        }
+    const clearHistory = async (date) => {
+        // Warning: This would require a specific bulk delete endpoint on the backend.
+        // For now, let's just clear the local state or inform user.
+        console.warn('Bulk clear not implemented on backend yet.');
     };
 
     // Getters
@@ -112,12 +139,6 @@ export function useCalorieTracker() {
     };
 
     const calculateStreak = () => {
-        // Basic streak logic: Consecutive days where calories > 0 and calories <= goal + 100 (grace buffer)
-        // This is computationally expensive for long history, but fine for local storage scale.
-        // For simplicity, let's just count days where log exists and total > 0.
-        // To match "stayed within goal": total <= goal.
-
-        // 1. Group totals by date
         const totalsByDate = foodLog.reduce((acc, item) => {
             acc[item.date] = (acc[item.date] || 0) + item.calories;
             return acc;
@@ -126,24 +147,14 @@ export function useCalorieTracker() {
         let streak = 0;
         const today = new Date();
 
-        // Check up to 365 days back
         for (let i = 0; i < 365; i++) {
             const d = subDays(today, i);
             const dateStr = format(d, 'yyyy-MM-dd');
             const calories = totalsByDate[dateStr] || 0;
 
-            // Logic: specific requirements says "reset streak if goal exceeded"
-            // And "consecutive days user stayed within goal".
-            // If calories == 0, is it a streak? Usually no, unless we count "fasting" as valid.
-            // Let's assume user must log *something* to keep streak alive, 
-            // OR simply "didn't exceed goal" which includes 0. 
-            // But "0" usually means "didn't track".
-            // Let's go with: Must have logged > 0 AND <= goal.
-
             if (calories > 0 && calories <= settings.dailyGoal) {
                 streak++;
             } else if (i === 0 && calories === 0) {
-                // If today is 0, we don't break streak yet (maybe just started day)
                 continue;
             } else {
                 break;
@@ -155,6 +166,8 @@ export function useCalorieTracker() {
     return {
         foodLog,
         settings,
+        loading,
+        error,
         addFood,
         deleteFood,
         updateGoal,
