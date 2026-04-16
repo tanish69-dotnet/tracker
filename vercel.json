@@ -1,0 +1,14 @@
+{
+  "experimentalServices": {
+    "frontend": {
+      "routePrefix": "/",
+      "framework": "vite",
+      "rootDirectory": "frontend"
+    },
+    "backend": {
+      "routePrefix": "/api",
+      "framework": "node",
+      "rootDirectory": "backend"
+    }
+  }
+}
